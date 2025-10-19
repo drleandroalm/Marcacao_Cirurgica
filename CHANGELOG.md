@@ -1,5 +1,16 @@
 # Changelog
 
+# Changelog
+
+## v1.2.0 — Context Caching & Highlighted Review *(Unreleased)*
+
+- Added `ExtractionSessionContext` builder to precompute deterministic matches, knowledge-base deltas, and prompt targets.
+- Introduced shared `HighlightedTranscriptView` with actor-backed `HighlightingContextCache` and VoiceOver-friendly labels.
+- Persisted evidence spans on `SurgicalRequestForm` and surfaced them across preview/decision flows.
+- Implemented debounced `RefinementQueue` actor powering the “Refinar” buttons without blocking the main actor.
+- Hardened `SpokenWordTranscriber` with pre-stop context caching and `@ObservationIgnored` task references to avoid SwiftUI crashes.
+- Expanded XCTest coverage with context fixtures, highlight rendering checks, and refined deterministic stage assertions.
+
 ## v1.1.1 — Extraction Robustness & Disambiguation
 
 - Fallback extraction now expands medical abbreviations (RTU/RTUP/UTL/etc.) before matching.

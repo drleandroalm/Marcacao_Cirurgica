@@ -1,0 +1,14 @@
+[
+  {
+    "name": "structured_pass",
+    "transcript": "Paciente João da Silva, 45 anos. Telefone 31 98888-7777. Cirurgia de hernioplastia no dia 18/04/2025 às 08:30, duração prevista de 2 horas.",
+    "deterministicFieldIds": ["surgeryDate", "surgeryTime", "procedureDuration", "patientPhone"],
+    "outstandingFieldIds": ["patientName", "patientAge", "surgeonName", "procedureName"]
+  },
+  {
+    "name": "noisy_dictation",
+    "transcript": "Então vamos lá, paciente Maria Oliveira, cinquenta e dois anos, telefone zero onze nove quatro quatro quatro oito oito sete sete. A cirurgia de colecistectomia está marcada para 21/05/2025 às 07h15, duração estimada uma hora e meia.",
+    "deterministicFieldIds": ["surgeryDate", "surgeryTime"],
+    "outstandingFieldIds": ["patientName", "patientAge", "surgeonName", "procedureName", "patientPhone", "procedureDuration"]
+  }
+]

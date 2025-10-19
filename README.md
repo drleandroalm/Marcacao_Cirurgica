@@ -37,6 +37,8 @@ This project began as Apple's WWDC25 Session 277 sample app demonstrating the ne
 - **Out-of-Order Recognition**: Say information in any order - AI understands context
 - **Confidence Scoring**: Each extracted entity includes confidence percentage
 - **Alternative Suggestions**: AI provides alternative interpretations when unsure
+- **Stage-Aware Prompting**: Deterministic + knowledge-base passes gate LLM calls and shrink prompts to only missing fields
+- **Batch Refinement Queue**: Low-confidence fields re-query asynchronously via a debounced `RefinementQueue` actor
 
 ### 🏥 Medical-Specific Features
 - **99.9% Accuracy**: Validated whitelist system for known surgeons and procedures
@@ -55,7 +57,9 @@ This project began as Apple's WWDC25 Session 277 sample app demonstrating the ne
 - **Preview & Edit**: Review all extracted data before confirming
 - **Export Options**: Copy to clipboard, share, save as JSON/Text
 - **Visual Confidence Indicators**: Green/Orange/Red indicators for extraction quality
+- **Highlighted Transcript Context**: Shared `HighlightedTranscriptView` shows origin spans with tint-coded confidence and VoiceOver labels
 - **Inline Editing**: Modify any incorrectly extracted values
+- **User-Triggered Refinements**: Tap “Refinar” to enqueue a targeted improvement for any field under 75% confidence
 - **History Tab**: Browse accepted sessions chronologically with search, filters, and deletion
 
 ### 🎨 Revamped Dark UI (v1.1.1)
@@ -81,6 +85,10 @@ This project began as Apple's WWDC25 Session 277 sample app demonstrating the ne
 │  │EntityExtractor│ │SurgicalForm  │ │TranscriptionProcessor│ │
 │  │(AI Service)   │ │Management    │ │(Text Processing)     │ │
 │  └──────────────┘ └──────────────┘ └───────────────────┘    │
+│  ┌────────────────────┐ ┌──────────────┐ ┌────────────────┐  │
+│  │ExtractionSession    │ │RefinementQueue │ │HighlightingCache │  │
+│  │Context Builder      │ │(Batch Refinement)│ │(Shared Spans)    │  │
+│  └────────────────────┘ └──────────────┘ └────────────────┘  │
 │  ┌────────────────────┐ ┌──────────────┐ ┌────────────────┐  │
 │  │WhitelistValidator  │ │IntelligentMatcher│ │OPMEConfiguration│ │
 │  │(99.9% Accuracy)    │ │(Fuzzy Matching)  │ │(Equipment Rules) │ │
@@ -149,6 +157,14 @@ open SwiftTranscriptionSampleApp.xcodeproj
 xcodebuild -project SwiftTranscriptionSampleApp.xcodeproj \
            -scheme SwiftTranscriptionSampleApp \
            -sdk iphonesimulator build
+```
+
+4. (Optional) Capture a highlight sanity screenshot straight from the CLI:
+
+```bash
+xcrun simctl launch booted com.example.apple-samplecode.SwiftTranscriptionSampleApp
+xcrun simctl io booted screenshot ./FormFillerView.png
+open ./FormFillerView.png
 ```
 
 ### Post‑Confirmation Flow
@@ -433,6 +449,15 @@ let response = try await session.respond(to: prompt)
 - **Battery Impact**: Minimal with on-device processing
 - **Confidence Thresholds**: 0.92 for acceptance
 
+## 🧪 Quality & Observability
+
+- **Unit & Integration Tests**: `xcodebuild test -scheme SwiftTranscriptionSampleApp` runs deterministic, KB, fallback, and highlight regressions.
+- **Highlight Sanity**: `EntityExtractionContextTests` verifies the shared highlighted transcript view renders and caches safely.
+- **Fixture Library**: JSON fixtures (e.g., `entity_extraction_context_cases.json`) plus transcripts like `structured_stage1.txt` capture noisy and ideal inputs.
+- **Performance Hooks**: os_signpost instrumentation around stop-recording, highlight caching, and refinement batches makes profiling simple in Instruments.
+- **Simulator Smoke**: Use the CLI snippet above to launch, capture, and visually inspect highlight cards after each change.
+
+
 ## 🚦 Troubleshooting
 
 ### Common Issues
@@ -465,6 +490,12 @@ let response = try await session.respond(to: prompt)
 
 See ROADMAP.md for the full plan. Highlights:
 
+### Recently shipped (v1.2.0)
+- Highlighted transcript review across Preview and Post-Decision flows
+- Extraction context cache + prompt gating to reduce LLM latency
+- Debounced refinement queue with UI affordances in Form Preview
+- Expanded fixtures/tests for deterministic stage and highlight rendering
+
 ### Recently shipped (v1.1.0)
 - History tab with search/filters/delete and compact CTI/OPME/Hem flags
 - Bulk export (CSV/JSON) with anonymization toggle
@@ -476,6 +507,7 @@ See ROADMAP.md for the full plan. Highlights:
 - Enhanced weekday/relative-date phrases
 - Session tagging/notes and export presets
 - Optional CSV/JSON encryption
+- UI snapshot coverage for highlight/refinement cards
 
 ### Later (v2.0+)
 - Multi‑template support

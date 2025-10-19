@@ -140,6 +140,9 @@ struct FormPreviewView: View {
                     field: field,
                     extractedEntity: extractionResult.entities.first { $0.fieldId == field.id },
                     complianceStatus: validationResult?.fieldStatuses[field.id],
+                    isLowConfidence: form.lowConfidenceFieldIds.contains(field.id),
+                    evidenceSnippet: form.evidenceSnippets[field.id],
+                    highlight: form.highlightSpans[field.id],
                     onEdit: { editField(field.id) },
                     onShowAlternatives: { showingAlternatives = field.id },
                     onRefine: { refineField(field.id) }
@@ -228,27 +231,31 @@ struct FormPreviewView: View {
         guard let entity = extractionResult.entities.first(where: { $0.fieldId == fieldId }) else { return }
         
         isRefining = true
-        Task { @MainActor in
-            do {
-                let extractor = EntityExtractor.shared
-                let refined = try await extractor.refineEntity(
-                    fieldId: fieldId,
-                    originalValue: entity.value,
-                    context: entity.originalText
-                )
-                
-                if let refined = refined,
-                   let fieldIndex = form.fields.firstIndex(where: { $0.id == fieldId }) {
+        Task {
+            let refined = await RefinementQueue.shared.submit(entity: entity)
+            await MainActor.run {
+                defer { isRefining = false }
+                guard let refined = refined else { return }
+                if let fieldIndex = form.fields.firstIndex(where: { $0.id == fieldId }) {
                     form.fields[fieldIndex].value = refined.value
-                    
-                    // Update the extraction result
-                    if let entityIndex = extractionResult.entities.firstIndex(where: { $0.fieldId == fieldId }) {
-                        extractionResult.entities[entityIndex] = refined
+                    if let highlight = refined.span.flatMap({ span in
+                        HighlightedSpan(
+                            fieldId: refined.fieldId,
+                            snippet: span.snippet,
+                            context: refined.originalText,
+                            start: span.start,
+                            end: span.end,
+                            confidence: refined.confidence
+                        )
+                    }) {
+                        form.highlightSpans[fieldId] = highlight
+                        form.evidenceSnippets[fieldId] = highlight.snippet
                     }
                 }
-                isRefining = false
-            } catch {
-                isRefining = false
+
+                if let entityIndex = extractionResult.entities.firstIndex(where: { $0.fieldId == fieldId }) {
+                    extractionResult.entities[entityIndex] = refined
+                }
             }
         }
     }
@@ -274,6 +281,9 @@ struct EntityPreviewCard: View {
     let field: TemplateField
     let extractedEntity: ExtractedEntity?
     let complianceStatus: ComplianceStatus?
+    let isLowConfidence: Bool
+    let evidenceSnippet: String?
+    let highlight: HighlightedSpan?
     let onEdit: () -> Void
     let onShowAlternatives: () -> Void
     let onRefine: () -> Void
@@ -329,7 +339,17 @@ struct EntityPreviewCard: View {
                     }
                 }
             }
-            
+
+            if isLowConfidence {
+                HStack {
+                    Image(systemName: "eye.trianglebadge.exclamationmark")
+                        .foregroundColor(.orange)
+                    Text("Revise este valor – confiança baixa")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+
             if !field.value.isEmpty && !field.validate() {
                 HStack {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -347,6 +367,12 @@ struct EntityPreviewCard: View {
                             .foregroundColor(.red)
                     }
                 }
+            }
+
+            if let highlight {
+                HighlightedTranscriptView(highlight: highlight)
+            } else if let snippet = evidenceSnippet, !snippet.isEmpty {
+                TranscriptSnippetView(snippet: snippet)
             }
         }
         .padding()

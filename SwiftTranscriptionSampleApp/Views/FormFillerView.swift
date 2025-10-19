@@ -27,7 +27,6 @@ struct FormFillerView: View {
     @State private var showingDecisions = false
     
     init() {
-        
     }
     
     var body: some View {
@@ -153,6 +152,8 @@ struct FormFillerView: View {
             .sheet(isPresented: $showingDecisions) {
                 PostTranscriptionDecisionsView(
                     form: $form,
+                    evidence: form.evidenceSnippets,
+                    highlightEvidence: form.highlightSpans,
                     onComplete: {
                         // Archive session to history
                         let session = SurgerySession.from(form: form)

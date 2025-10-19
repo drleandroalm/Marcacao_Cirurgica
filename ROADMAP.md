@@ -2,6 +2,14 @@
 
 This roadmap outlines near‑term and long‑term development priorities. Dates are targets and may shift based on validation and feedback.
 
+## Recently Shipped (v1.2.0)
+- Highlighted transcript pipeline with reusable `HighlightedTranscriptView`
+- Context precomputation cache and deterministic stage gating for `EntityExtractor`
+- Batch refinement queue with debounced UI entry points in Form Preview
+- Evidence spans persisted on `SurgicalRequestForm` for downstream review surfaces
+- Additional fixtures + tests for deterministic stage snapshots and highlight rendering
+- Accessibility pass for highlights (VoiceOver label for snippet + confidence)
+
 ## Recently Shipped (v1.1.1)
 - Robust fallback extraction (KB‑assisted n‑gram scan for surgeons/procedures)
 - Abbreviation expansion in fallback (RTU/RTUP/UTL/etc.)
@@ -41,6 +49,7 @@ This roadmap outlines near‑term and long‑term development priorities. Dates 
 - Offline model improvements (domain‑tuned on‑device post‑processors)
 
 ## Technical Debt & Quality
+- Snapshot/UI testing for highlight cards and refinement states (XCUITest or swift-snapshot-testing)
 - Centralize redaction utilities; compile‑time protections for logging
 - Expand unit tests for regex fallbacks and edge‑case date/time (including locale misspellings)
 - Stress test Recorder/Transcriber lifecycle (rapid toggling, backgrounding)
@@ -54,6 +63,7 @@ This roadmap outlines near‑term and long‑term development priorities. Dates 
 ## Knowledge Base
 - Tools to curate and validate JSON resources (surgeons, procedures, abbreviations)
 - CSV→JSON pipeline with diff reporting and unit tests for KB migrations
+- Capture user feedback loop from refinement queue to score KB coverage
 
 ---
 

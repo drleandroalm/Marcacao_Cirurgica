@@ -2,6 +2,8 @@ import SwiftUI
 
 struct PostTranscriptionDecisionsView: View {
     @Binding var form: SurgicalRequestForm
+    let evidence: [String: String]
+    let highlightEvidence: [String: HighlightedSpan]
     @State private var showingOPMEDetails = false
     @State private var isProcessing = false
     
@@ -16,16 +18,26 @@ struct PostTranscriptionDecisionsView: View {
                     
                     // Only show decisions that weren't mentioned in transcription
                     if !form.ctiMentionedInTranscription {
-                        CTIDecisionCard(selection: $form.needsCTI)
+                        CTIDecisionCard(
+                            selection: $form.needsCTI,
+                            evidenceSnippet: evidence["ctiFlag"],
+                            highlight: highlightEvidence["ctiFlag"]
+                        )
                     }
                     
                     if !form.precautionMentionedInTranscription {
-                        PrecautionDecisionCard(selection: $form.patientPrecaution)
+                        PrecautionDecisionCard(
+                            selection: $form.patientPrecaution,
+                            evidenceSnippet: evidence["precautionFlag"],
+                            highlight: highlightEvidence["precautionFlag"]
+                        )
                     }
                     
                     // Always show OPME configuration for confirmation
                     OPMEConfigurationCard(
                         form: form,
+                        procedureSnippet: evidence["procedureName"],
+                        procedureHighlight: highlightEvidence["procedureName"],
                         showingDetails: $showingOPMEDetails
                     )
                     
@@ -60,6 +72,14 @@ struct PostTranscriptionDecisionsView: View {
             Text("Selecione as opções que não foram mencionadas durante a transcrição.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
+            
+            if form.ctiMentionedInTranscription {
+                if let highlight = highlightEvidence["ctiFlag"] {
+                    HighlightedTranscriptView(highlight: highlight, accentColor: .orange)
+                } else if let snippet = evidence["ctiFlag"], !snippet.isEmpty {
+                    TranscriptSnippetView(snippet: snippet, title: "Trecho relacionado a CTI", accentColor: .orange)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -139,6 +159,8 @@ struct PostTranscriptionDecisionsView: View {
 
 struct CTIDecisionCard: View {
     @Binding var selection: Bool?
+    var evidenceSnippet: String?
+    var highlight: HighlightedSpan?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -147,6 +169,12 @@ struct CTIDecisionCard: View {
                     .foregroundColor(.orange)
                 Text("Necessidade de CTI")
                     .font(.headline)
+            }
+            
+            if let highlight {
+                HighlightedTranscriptView(highlight: highlight, accentColor: .orange)
+            } else if let snippet = evidenceSnippet, !snippet.isEmpty {
+                TranscriptSnippetView(snippet: snippet, accentColor: .orange)
             }
             
             Text("O paciente precisará de Centro de Terapia Intensiva?")
@@ -186,6 +214,8 @@ struct CTIDecisionCard: View {
 
 struct PrecautionDecisionCard: View {
     @Binding var selection: Bool?
+    var evidenceSnippet: String?
+    var highlight: HighlightedSpan?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -194,6 +224,12 @@ struct PrecautionDecisionCard: View {
                     .foregroundColor(.yellow)
                 Text("Paciente em Precaução")
                     .font(.headline)
+            }
+            
+            if let highlight {
+                HighlightedTranscriptView(highlight: highlight, accentColor: .yellow)
+            } else if let snippet = evidenceSnippet, !snippet.isEmpty {
+                TranscriptSnippetView(snippet: snippet, accentColor: .yellow)
             }
             
             Text("O paciente requer precauções especiais?")
@@ -233,6 +269,8 @@ struct PrecautionDecisionCard: View {
 
 struct OPMEConfigurationCard: View {
     let form: SurgicalRequestForm
+    var procedureSnippet: String?
+    var procedureHighlight: HighlightedSpan?
     @Binding var showingDetails: Bool
     
     private var opmeConfig: OPMERequirement {
@@ -257,6 +295,12 @@ struct OPMEConfigurationCard: View {
                         .font(.caption)
                         .foregroundColor(.green)
                 }
+            }
+            
+            if let highlight = procedureHighlight {
+                HighlightedTranscriptView(highlight: highlight, accentColor: .blue)
+            } else if let snippet = procedureSnippet, !snippet.isEmpty {
+                TranscriptSnippetView(snippet: snippet, title: "Trecho do procedimento", accentColor: .blue)
             }
             
             if opmeConfig.needed {

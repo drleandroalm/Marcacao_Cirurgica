@@ -11,6 +11,7 @@ import SwiftUI
 import FoundationModels
 import AVFoundation
 import CoreMedia
+import Observation
 import os
 
 @MainActor
@@ -46,7 +47,9 @@ final class SpokenWordTranscriber {
     var finalizedTranscript: AttributedString = ""
     var continuousTranscript: String = ""
     private var isProcessingTranscription = false
-    private var progressiveProcessingTask: Task<Void, Never>?
+    @ObservationIgnored private var progressiveProcessingTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingExtractionContextTask: Task<ExtractionSessionContext, Never>?
+    @ObservationIgnored private var pendingExtractionContextSource: String?
     
     private func redactedSummary(for text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -280,6 +283,45 @@ final class SpokenWordTranscriber {
         progressiveProcessingTask = nil
     }
 
+    private func prepareExtractionContextCache(for transcript: String) {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            clearExtractionContextCache()
+            return
+        }
+
+        let snapshots = form.fields.map { field in
+            FieldSnapshot(id: field.id, value: field.value, fieldType: field.fieldType)
+        }
+
+        pendingExtractionContextSource = trimmed
+        pendingExtractionContextTask?.cancel()
+        pendingExtractionContextTask = Task(priority: .utility) {
+            await ExtractionSessionContext.build(originalText: trimmed, fieldSnapshots: snapshots)
+        }
+    }
+
+    private func clearExtractionContextCache() {
+        pendingExtractionContextTask?.cancel()
+        pendingExtractionContextTask = nil
+        pendingExtractionContextSource = nil
+        Task { await HighlightingContextCache.shared.clear() }
+    }
+
+    private func resolveExtractionContext(for transcript: String) async -> ExtractionSessionContext {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let task = pendingExtractionContextTask,
+           let cachedSource = pendingExtractionContextSource,
+           cachedSource == trimmed {
+            return await task.value
+        }
+
+        let snapshots = form.fields.map { field in
+            FieldSnapshot(id: field.id, value: field.value, fieldType: field.fieldType)
+        }
+        return await ExtractionSessionContext.build(originalText: trimmed, fieldSnapshots: snapshots)
+    }
+
     
     private func processTranscriptionResult(_ result: SpeechTranscriber.Result) async {
         let text = result.text
@@ -324,6 +366,10 @@ final class SpokenWordTranscriber {
                     print("  - Total length: \(continuousTranscript.count) characters")
                     print("  - Word count: \(continuousTranscript.split(separator: " ").count) words")
                     
+                    if configuration.processAfterRecording {
+                        prepareExtractionContextCache(for: continuousTranscript)
+                    }
+
                     // Only auto-process if NOT in "process after recording" mode
                     if !configuration.processAfterRecording &&
                         continuousTranscript.count > configuration.autoProcessCharacterCount &&
@@ -416,17 +462,19 @@ final class SpokenWordTranscriber {
         
         // Capture the transcript for processing
         let transcriptToProcess = trimmed
+        let context = await resolveExtractionContext(for: transcriptToProcess)
         
         // Only clear if in process-after-recording mode (since we won't accumulate more)
         // In progressive mode, keep accumulating
         if configuration.processAfterRecording {
             continuousTranscript = ""  // Reset after final processing
             print("🧹 Cleared continuous transcript after final processing")
+            clearExtractionContextCache()
         }
         
         do {
             print("🤖 Calling EntityExtractor with transcript of \(transcriptToProcess.count) chars")
-            let result = try await entityExtractor.extractEntities(from: transcriptToProcess, for: form)
+            let result = try await entityExtractor.extractEntities(using: context, form: form)
             
             print("✅ Extraction complete: \(result.entities.count) entities found")
             
@@ -439,18 +487,69 @@ final class SpokenWordTranscriber {
             
             await MainActor.run {
                 // Update form fields directly on success (was missing before)
+                form.lowConfidenceFieldIds.removeAll()
+                form.evidenceSnippets.removeAll()
+                form.highlightSpans = result.highlights
+                Task {
+                    for highlight in result.highlights.values {
+                        _ = await HighlightingContextCache.shared.fragments(for: highlight)
+                    }
+                }
                 for entity in result.entities {
                     if let fieldIndex = form.fields.firstIndex(where: { $0.id == entity.fieldId }) {
                         if !entity.value.isEmpty {
-                            form.fields[fieldIndex].value = entity.value
-                            print("✅ Updated: \(form.fields[fieldIndex].label) = \(redactedValue(entity.value))")
+                            let field = form.fields[fieldIndex]
+                            let processedValue: String
+                            switch field.fieldType {
+                            case .age, .number, .date, .time, .phone, .duration:
+                                processedValue = TranscriptionProcessor.processText(entity.value, fieldType: field.fieldType)
+                            default:
+                                processedValue = entity.value
+                            }
+                            form.fields[fieldIndex].value = processedValue.isEmpty ? entity.value : processedValue
+                            if let highlight = result.highlights[entity.fieldId] {
+                                form.evidenceSnippets[entity.fieldId] = highlight.snippet
+                            } else {
+                                form.evidenceSnippets[entity.fieldId] = entity.span?.snippet ?? ""
+                            }
+                            if entity.confidence < 0.75 {
+                                form.lowConfidenceFieldIds.insert(entity.fieldId)
+                            } else {
+                                form.lowConfidenceFieldIds.remove(entity.fieldId)
+                            }
+                            let appliedValue = form.fields[fieldIndex].value
+                            print("✅ Updated: \(field.label) = \(redactedValue(appliedValue))")
+                            if let span = entity.span {
+                                print("   ↳ span \(span.start)-\(span.end) snippet=\(redactedValue(span.snippet))")
+                            }
                         }
                     }
                 }
                 
                 // Mark extraction flags if relevant entities were found
-                if result.entities.contains(where: { $0.fieldId == "procedureName" && $0.value.lowercased().contains("cti") }) {
+                if let ctiEntity = result.entities.first(where: { $0.fieldId == "procedureName" && $0.value.lowercased().contains("cti") }) {
                     form.ctiMentionedInTranscription = true
+                    if let highlight = result.highlights[ctiEntity.fieldId] {
+                        form.evidenceSnippets["ctiFlag"] = highlight.snippet
+                        form.highlightSpans["ctiFlag"] = HighlightedSpan(
+                            fieldId: "ctiFlag",
+                            snippet: highlight.snippet,
+                            context: highlight.context,
+                            start: highlight.start,
+                            end: highlight.end,
+                            confidence: highlight.confidence
+                        )
+                    } else if let snippet = ctiEntity.span?.snippet, !snippet.isEmpty {
+                        form.evidenceSnippets["ctiFlag"] = snippet
+                        form.highlightSpans["ctiFlag"] = HighlightedSpan(
+                            fieldId: "ctiFlag",
+                            snippet: snippet,
+                            context: snippet,
+                            start: 0,
+                            end: snippet.count,
+                            confidence: ctiEntity.confidence
+                        )
+                    }
                 }
                 
                 // Notify UI
@@ -469,10 +568,28 @@ final class SpokenWordTranscriber {
                     let fallbackResult = try EntityExtractor.fallbackExtraction(from: transcriptToProcess)
                     
                     await MainActor.run {
+                        form.lowConfidenceFieldIds.removeAll()
+                        form.evidenceSnippets.removeAll()
+                        form.highlightSpans = fallbackResult.highlights
+                        Task {
+                            for highlight in fallbackResult.highlights.values {
+                                _ = await HighlightingContextCache.shared.fragments(for: highlight)
+                            }
+                        }
                         for entity in fallbackResult.entities {
                             if let fieldIndex = form.fields.firstIndex(where: { $0.id == entity.fieldId }) {
                                 if !entity.value.isEmpty {
                                     form.fields[fieldIndex].value = entity.value
+                                    if let highlight = fallbackResult.highlights[entity.fieldId] {
+                                        form.evidenceSnippets[entity.fieldId] = highlight.snippet
+                                    } else {
+                                        form.evidenceSnippets[entity.fieldId] = entity.span?.snippet ?? ""
+                                    }
+                                    if entity.confidence < 0.75 {
+                                        form.lowConfidenceFieldIds.insert(entity.fieldId)
+                                    } else {
+                                        form.lowConfidenceFieldIds.remove(entity.fieldId)
+                                    }
                                     print("✅ Fallback updated: \(form.fields[fieldIndex].label) = \(redactedValue(entity.value))")
                                 }
                             }
@@ -484,6 +601,9 @@ final class SpokenWordTranscriber {
                     print("❌ Fallback extraction also failed: \(error)")
                 }
             }
+        }
+        if !configuration.processAfterRecording {
+            prepareExtractionContextCache(for: continuousTranscript)
         }
     }
     
@@ -518,8 +638,9 @@ final class SpokenWordTranscriber {
         continuousTranscript = ""
         finalizedTranscript = AttributedString("")
         volatileTranscript = AttributedString("")
+        clearExtractionContextCache()
     }
-    
+
     func resetSession() {
         print("🔄 Starting session reset...")
         print("  - Current transcript length: \(continuousTranscript.count)")
@@ -529,6 +650,7 @@ final class SpokenWordTranscriber {
         continuousTranscript = ""
         finalizedTranscript = AttributedString("")
         volatileTranscript = AttributedString("")
+        clearExtractionContextCache()
         
         // Clear input builder state to ensure clean session
         inputBuilder?.finish()

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Observation
 
 @Observable
 @MainActor
@@ -20,6 +21,13 @@ class SurgicalRequestForm {
     // Flags to track what was mentioned during transcription
     var ctiMentionedInTranscription: Bool = false
     var precautionMentionedInTranscription: Bool = false
+    
+    // Evidence snippets keyed by fieldId
+    var evidenceSnippets: [String: String] = [:]
+    @ObservationIgnored var highlightSpans: [String: HighlightedSpan] = [:]
+    
+    // Tracks fields flagged for refinement or low confidence
+    var lowConfidenceFieldIds: Set<String> = []
     
     init() {
         self.fields = [
@@ -173,5 +181,8 @@ class SurgicalRequestForm {
         hemocomponentsSpecification = ""
         ctiMentionedInTranscription = false
         precautionMentionedInTranscription = false
+        evidenceSnippets.removeAll()
+        lowConfidenceFieldIds.removeAll()
+        highlightSpans.removeAll()
     }
 }
