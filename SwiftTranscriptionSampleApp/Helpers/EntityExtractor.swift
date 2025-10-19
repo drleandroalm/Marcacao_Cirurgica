@@ -111,6 +111,53 @@ class EntityExtractor {
     private var isSessionReady = false
     nonisolated private static let metricsLog = OSLog(subsystem: "SwiftTranscriptionSampleApp", category: "EntityExtractor")
     nonisolated private static let preferredDeterministicFieldIds: Set<String> = ["surgeryDate", "surgeryTime", "patientPhone", "procedureDuration"]
+    nonisolated private static let abbreviationRegexCache: [(regex: NSRegularExpression, replacement: String)] = {
+        MedicalKnowledgeBase.abbreviationExpansions.compactMap { key, value in
+            let escaped = NSRegularExpression.escapedPattern(for: key)
+            let pattern = "\\b\(escaped)\\b"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                return nil
+            }
+            return (regex: regex, replacement: value)
+        }
+    }()
+    nonisolated private static let patientNameRegexes: [NSRegularExpression] = {
+        let patterns = [
+            #"\b(?:paciente|a\s+paciente|o\s+paciente)\s*(?:se\s+chama|chama-se)?\s*(?:[:\-–]?|\s+é\s+|\s+é\s+o\s+|\s+é\s+a\s+)?([A-Za-zÁÂÃÉÊÍÓÔÕÚÜÇáâãéêíóôõúüç'`\s-]{3,})"#,
+            #"\bnome\s+(?:do|da)?\s*(?:paciente)?\s*(?:[:\-–]?|\s+é\s+|\s+é\s+o\s+|\s+é\s+a\s+)?([A-Za-zÁÂÃÉÊÍÓÔÕÚÜÇáâãéêíóôõúüç'`\s-]{3,})"#,
+            #"\bo\s+nome\s+d[ao]\s+paciente\s*(?:[:\-–]?|\s+é\s+)?([A-Za-zÁÂÃÉÊÍÓÔÕÚÜÇáâãéêíóôõúüç'`\s-]{3,})"#,
+            #"\b(?:o|a)\s+paciente\s*(?:se\s+chama|chama-se)\s+([A-Za-zÁÂÃÉÊÍÓÔÕÚÜÇáâãéêíóôõúüç'`\s-]{3,})"#,
+            #"^\s*([A-Za-zÁÂÃÉÊÍÓÔÕÚÜÇáâãéêíóôõúüç'`\s-]{3,})\s*,?\s*(?:\d{1,3}\s+anos)"#
+        ]
+        return patterns.compactMap { pattern in
+            try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        }
+    }()
+    nonisolated private static let patientNameStopWords: Set<String> = [
+        "anos", "idade", "telefone", "celular", "contato", "cirurgia", "procedimento", "marcada",
+        "marcado", "duracao", "duração", "horario", "horário", "as", "às", "no", "na", "para",
+        "dia", "data", "que", "vai", "ser", "sera", "será", "agendada", "agendado"
+    ]
+    nonisolated private static let patientNameDiscardPrefixes: Set<String> = [
+        "é", "eh", "se", "chama", "chamase", "chama-se", "de", "da", "do", "paciente", "a", "o", "nome"
+    ]
+    nonisolated private static let durationRegexes: [(regex: NSRegularExpression, groupIndex: Int)] = {
+        let patterns: [(String, Int)] = [
+            (#"\b(\d{1,2}\s*h(?:oras?)?(?:\s*e\s*\d{1,2}\s*min(?:utos?)?)?)\b"#, 1),
+            (#"\b(\d+\s*(?:a\s*)?\d*\s*horas?)\b"#, 1),
+            (#"\b(\d{1,3}\s*min(?:utos?)?)\b"#, 1),
+            (#"dura[cç][aã]o\s*(?:estimad[ao]?\s*)?(?:de\s*)?([^-\n\r,.;]+)"#, 1),
+            (#"tempo\s*(?:estimad[ao]?\s*)?(?:de\s*)?([^-\n\r,.;]+)"#, 1),
+            (#"\b(uma|um|duas|dois|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s+horas?(?:\s+e\s+(?:meia|trinta\s+minutos?|quinze\s+minutos?|quarenta\s+e\s+cinco\s+minutos?))?\b"#, 0),
+            (#"\bmeia\s+hora\b"#, 0)
+        ]
+        return patterns.compactMap { pattern, index in
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                return nil
+            }
+            return (regex, index)
+        }
+    }()
     
     nonisolated private static func redactedSummary(for text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,17 +209,14 @@ class EntityExtractor {
     // MARK: - Abbreviation expansion utility (shared with fallback)
     nonisolated static func expandAbbreviations(in text: String) -> String {
         var processed = text
-        for (abbr, expansion) in MedicalKnowledgeBase.abbreviationExpansions {
-            let pattern = "\\b\(abbr)\\b"
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                let range = NSRange(location: 0, length: processed.utf16.count)
-                processed = regex.stringByReplacingMatches(
-                    in: processed,
-                    options: [],
-                    range: range,
-                    withTemplate: expansion
-                )
-            }
+        for entry in abbreviationRegexCache {
+            let range = NSRange(location: 0, length: processed.utf16.count)
+            processed = entry.regex.stringByReplacingMatches(
+                in: processed,
+                options: [],
+                range: range,
+                withTemplate: entry.replacement
+            )
         }
         return processed
     }
@@ -995,47 +1039,116 @@ class EntityExtractor {
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
+    nonisolated private static func makeSpan(in original: String, range: Range<String.Index>) -> ExtractionSpan {
+        let snippet = String(original[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let start = original.distance(from: original.startIndex, to: range.lowerBound)
+        let end = original.distance(from: original.startIndex, to: range.upperBound)
+        return ExtractionSpan(start: start, end: end, snippet: snippet)
+    }
+
+    nonisolated private static func makeSpan(forNormalized value: String, in original: String) -> ExtractionSpan? {
+        guard let range = original.range(of: value, options: [.caseInsensitive, .diacriticInsensitive]) else {
+            return nil
+        }
+        return makeSpan(in: original, range: range)
+    }
+
+    nonisolated private static func normalizePersonNameCandidate(_ raw: String) -> String? {
+        let sanitized = raw.replacingOccurrences(
+            of: "[^\u00C0-\u017Fa-zA-Z'`\s-]",
+            with: " ",
+            options: .regularExpression
+        )
+        var tokens: [String] = []
+        for element in sanitized.split(whereSeparator: { $0.isWhitespace }) {
+            let trimmed = element.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let lower = trimmed.lowercased()
+            if tokens.isEmpty && patientNameDiscardPrefixes.contains(lower) {
+                continue
+            }
+            if patientNameStopWords.contains(lower) { break }
+            if trimmed.allSatisfy({ $0.isNumber }) { break }
+            tokens.append(trimmed)
+            if tokens.count >= 6 { break }
+        }
+        guard tokens.count >= 2 else { return nil }
+        let joined = tokens.joined(separator: " ")
+        let normalized = capitalizeProperly(joined)
+        return normalized
+    }
+
+    nonisolated private static func extractPatientName(in text: String, lowercased: String, tokens: [String]) -> ExtractedEntity? {
+        let searchRange = NSRange(text.startIndex..., in: text)
+        for regex in patientNameRegexes {
+            let matches = regex.matches(in: text, range: searchRange)
+            for match in matches {
+                let captureIndex = match.numberOfRanges > 1 ? 1 : 0
+                guard let range = Range(match.range(at: captureIndex), in: text) else { continue }
+                let rawSegment = String(text[range])
+                guard let normalized = normalizePersonNameCandidate(rawSegment) else { continue }
+                let span = makeSpan(in: text, range: range)
+                return ExtractedEntity(
+                    fieldId: "patientName",
+                    value: normalized,
+                    confidence: 0.82,
+                    alternatives: [],
+                    originalText: text,
+                    span: span,
+                    signals: [ConfidenceSignal(source: "pattern", score: 0.82)]
+                )
+            }
+        }
+
+        let keywordPatterns: [(keyword: String, startOffset: Int, endOffset: Int)] = [
+            ("paciente", 1, 3),
+            ("nome", 1, 3),
+            ("senhor", 1, 3),
+            ("senhora", 1, 3),
+            ("chama", 1, 4)
+        ]
+
+        for pattern in keywordPatterns {
+            if let keyIndex = tokens.firstIndex(where: { $0.contains(pattern.keyword) }) {
+                let startIndex = keyIndex + pattern.startOffset
+                guard startIndex >= 0, startIndex < tokens.count else { continue }
+                let endIndex = min(max(startIndex, keyIndex + pattern.endOffset), tokens.count - 1)
+                if endIndex < startIndex { continue }
+                let slice = tokens[startIndex...endIndex]
+                let candidate = slice.joined(separator: " ")
+                guard let normalized = normalizePersonNameCandidate(candidate) else { continue }
+                let span = makeSpan(forNormalized: normalized, in: text)
+                return ExtractedEntity(
+                    fieldId: "patientName",
+                    value: normalized,
+                    confidence: 0.72,
+                    alternatives: [],
+                    originalText: text,
+                    span: span,
+                    signals: [ConfidenceSignal(source: "keyword", score: 0.72)]
+                )
+            }
+        }
+
+        return nil
+    }
+
     nonisolated static func fallbackExtraction(from text: String) throws -> ExtractionResult {
         print("🔍 Fallback extraction: Processing \(Self.redactedSummary(for: text))")
         let id = OSSignpostID(log: metricsLog)
         os_signpost(.begin, log: metricsLog, name: "fallbackExtraction", signpostID: id)
-        
+
         var entities: [ExtractedEntity] = []
         // Expand known abbreviations first (e.g., RTU, RTUP, UTL, etc.)
         let expanded = expandAbbreviations(in: text)
         let lowercased = expanded.lowercased()
         let words = lowercased.split(separator: " ").map(String.init)
         print("📊 Starting pattern matching for all 8 fields...")
-        
-        // 1. Extract patient name - enhanced patterns
-        let namePatterns = [
-            ("paciente", 1, 3),  // "paciente João Silva"
-            ("nome", 1, 3),      // "nome João Silva"
-            ("senhor", 1, 3),    // "senhor João Silva"
-            ("senhora", 1, 3),   // "senhora Maria Silva"
-        ]
-        
-        for (keyword, startOffset, endOffset) in namePatterns {
-            if let keyIndex = words.firstIndex(where: { $0.lowercased().contains(keyword) }),
-               keyIndex + startOffset < words.count {
-                let endIndex = min(keyIndex + endOffset, words.count - 1)
-                let name = words[keyIndex + startOffset...endIndex]
-                    .filter { !["de", "da", "do", "dos", "das"].contains($0.lowercased()) || $0.count > 2 }
-                    .joined(separator: " ")
-                
-                if !name.isEmpty && name.count > 2 {
-                    entities.append(ExtractedEntity(
-                        fieldId: "patientName",
-                        value: Self.capitalizeProperly(name),
-                        confidence: 0.75,
-                        alternatives: [],
-                        originalText: text
-                    ))
-                    print("👤 Found patient name \(Self.redactedValue(name))")
-                    break
-                }
-            }
+
+        if let patient = extractPatientName(in: expanded, lowercased: lowercased, tokens: words) {
+            print("👤 Found patient name \(Self.redactedValue(patient.value))")
+            entities.append(patient)
         }
         
         // 2. Extract age - enhanced patterns
@@ -1280,39 +1393,43 @@ class EntityExtractor {
         }
         
         // 8. Extract duration - new field handling
-        let durationPatterns = [
-            #"(\d+)\s*(?:a\s*)?(\d+)?\s*horas?"#,
-            #"(\d+)\s*minutos?"#,
-            #"duração\s*(?:de\s*)?(\d+)\s*(?:a\s*)?(\d+)?\s*horas?"#,
-            #"tempo\s*(?:estimado\s*)?(?:de\s*)?(\d+)\s*horas?"#
-        ]
-        
         let hasDurationKeyword = lowercased.contains("duração") || lowercased.contains("duracao") || lowercased.contains("tempo") || lowercased.contains("estimad")
-        for pattern in durationPatterns {
-            if let durationMatch = text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) {
-                let durationStr = String(text[durationMatch])
-                // Disambiguate phrases like "uma hora da tarde" when time already detected
-                let segmentLower = durationStr.lowercased()
-                let looksLikeClockPhrase = segmentLower.contains("hora") && (lowercased.contains("da tarde") || lowercased.contains("da noite") || lowercased.contains("da manhã") || lowercased.contains("de manhã"))
-                if foundTime && !hasDurationKeyword && looksLikeClockPhrase {
-                    continue
-                }
-                // If time was found and there is no duration keyword, be conservative for hours-only matches
-                if foundTime && !hasDurationKeyword && (segmentLower.contains("hora") && !segmentLower.contains("minuto")) {
-                    continue
-                }
-                let duration = formatDuration(durationStr)
-                if !duration.isEmpty {
-                    entities.append(ExtractedEntity(
-                        fieldId: "procedureDuration",
-                        value: duration,
-                        confidence: 0.75,
-                        alternatives: [],
-                        originalText: text
-                    ))
-                    print("⏱ Found duration \(Self.redactedValue(duration))")
-                    break
-                }
+        let durationSearchRange = NSRange(expanded.startIndex..., in: expanded)
+        for (regex, groupIndex) in durationRegexes {
+            guard let match = regex.firstMatch(in: expanded, range: durationSearchRange) else { continue }
+            let targetIndex = min(groupIndex, match.numberOfRanges - 1)
+            guard targetIndex >= 0 else { continue }
+            let nsRange = match.range(at: targetIndex)
+            guard nsRange.location != NSNotFound, let range = Range(nsRange, in: expanded) else { continue }
+            let durationStr = String(expanded[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let segmentLower = durationStr.lowercased()
+            let looksLikeClockPhrase = segmentLower.contains("hora") && (
+                lowercased.contains("da tarde") ||
+                lowercased.contains("da noite") ||
+                lowercased.contains("da manhã") ||
+                lowercased.contains("de manhã")
+            )
+            if foundTime && !hasDurationKeyword && looksLikeClockPhrase {
+                continue
+            }
+            if foundTime && !hasDurationKeyword && (segmentLower.contains("hora") && !segmentLower.contains("minuto")) {
+                continue
+            }
+            let duration = formatDuration(durationStr)
+            if !duration.isEmpty {
+                let span = makeSpan(forNormalized: durationStr, in: text)
+                let signals = [ConfidenceSignal(source: "pattern", score: 0.75)]
+                entities.append(ExtractedEntity(
+                    fieldId: "procedureDuration",
+                    value: duration,
+                    confidence: 0.75,
+                    alternatives: [],
+                    originalText: text,
+                    span: span,
+                    signals: signals
+                ))
+                print("⏱ Found duration \(Self.redactedValue(duration))")
+                break
             }
         }
         
