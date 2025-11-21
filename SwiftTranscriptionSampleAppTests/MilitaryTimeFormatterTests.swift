@@ -18,5 +18,10 @@ final class MilitaryTimeFormatterTests: XCTestCase {
         XCTAssertEqual(MilitaryTimeFormatter.format("meio dia e quinze"), "12:15")
         XCTAssertEqual(MilitaryTimeFormatter.format("meia noite"), "00:00")
     }
+
+    func test_WhenAccentsMissingOrPrefixesUsed_ShouldNormalize() {
+        XCTAssertEqual(MilitaryTimeFormatter.format("as sete e meia da manha"), "07:30")
+        XCTAssertEqual(MilitaryTimeFormatter.format("por volta das nove da noite"), "21:00")
+    }
 }
 
