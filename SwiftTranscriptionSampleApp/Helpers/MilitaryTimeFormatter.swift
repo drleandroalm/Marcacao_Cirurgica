@@ -1,6 +1,8 @@
 import Foundation
 
 class MilitaryTimeFormatter {
+
+    private static let normalizationLocale = Locale(identifier: "pt_BR")
     
     // MARK: - Time Expression Mappings
     
@@ -68,11 +70,24 @@ class MilitaryTimeFormatter {
         "onze da noite": "23:00",
         "onze e meia da noite": "23:30"
     ]
+
+    private static let normalizedTimeExpressions: [String: String] = {
+        var mapping: [String: String] = [:]
+        for (key, value) in timeExpressions {
+            mapping[normalizeKey(key)] = value
+        }
+        return mapping
+    }()
+
+    private static let normalizedPrefixes: [String] = {
+        let prefixes = ["às", "as", "por volta das", "aproximadamente", "cerca de"]
+        return prefixes.map { normalizeKey($0) }
+    }()
     
     // Number word mappings
     private static let numberWords: [String: Int] = [
         "zero": 0, "uma": 1, "um": 1, "dois": 2, "duas": 2,
-        "três": 3, "quatro": 4, "cinco": 5, "seis": 6,
+        "tres": 3, "quatro": 4, "cinco": 5, "seis": 6,
         "sete": 7, "oito": 8, "nove": 9, "dez": 10,
         "onze": 11, "doze": 12, "treze": 13, "catorze": 14,
         "quatorze": 14, "quinze": 15, "dezesseis": 16,
@@ -87,7 +102,7 @@ class MilitaryTimeFormatter {
         let normalized = normalizePortuguese(input)
         
         // Try direct mapping first
-        if let directMatch = timeExpressions[normalized] {
+        if let directMatch = normalizedTimeExpressions[normalized] {
             return directMatch
         }
         
@@ -112,7 +127,7 @@ class MilitaryTimeFormatter {
                 if hour < 12 && hour != 0 {
                     militaryHour += 12
                 }
-            } else if period == "manhã" || period == "madrugada" {
+            } else if period == "manha" {
                 if hour == 12 {
                     militaryHour = 0 // Midnight
                 }
@@ -132,22 +147,27 @@ class MilitaryTimeFormatter {
     
     // MARK: - Helper Methods
     
+    private static func normalizeKey(_ text: String) -> String {
+        let lowered = text.lowercased()
+        let folded = lowered.folding(options: [.diacriticInsensitive, .widthInsensitive], locale: normalizationLocale)
+        var cleaned = folded.replacingOccurrences(of: "-", with: " ")
+        cleaned = cleaned.replacingOccurrences(of: "[,.]", with: " ", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func normalizePortuguese(_ text: String) -> String {
-        var normalized = text.lowercased()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        // Remove common prefixes
-        let prefixesToRemove = ["às", "as", "por volta das", "aproximadamente", "cerca de"]
-        for prefix in prefixesToRemove {
+        var normalized = normalizeKey(text)
+
+        for prefix in normalizedPrefixes {
             if normalized.hasPrefix(prefix + " ") {
                 normalized = String(normalized.dropFirst(prefix.count + 1))
+            } else if normalized == prefix {
+                normalized = ""
             }
         }
-        
-        // Normalize spaces
-        normalized = normalized.replacingOccurrences(of: "  ", with: " ")
-        
-        return normalized
+
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private static func isMilitaryFormat(_ text: String) -> Bool {
@@ -199,8 +219,8 @@ class MilitaryTimeFormatter {
         var period = ""
         
         // Detect period (manhã, tarde, noite)
-        if text.contains("manhã") || text.contains("madrugada") {
-            period = "manhã"
+        if text.contains("manha") || text.contains("madrugada") {
+            period = "manha"
         } else if text.contains("tarde") {
             period = "tarde"
         } else if text.contains("noite") {
@@ -246,8 +266,9 @@ class MilitaryTimeFormatter {
             minute = 45
         } else if text.contains("quinze") && !text.contains("e quinze") {
             // Sometimes "quinze" is used alone to mean X:15
-            let quinzeIndex = words.firstIndex(of: "quinze") ?? -1
-            if quinzeIndex > 0 && words[quinzeIndex - 1] != "e" {
+            if let quinzeIndex = words.firstIndex(of: "quinze"),
+               quinzeIndex > 0,
+               words[quinzeIndex - 1] != "e" {
                 hour = numberWords[words[quinzeIndex - 1]] ?? hour
                 minute = 15
             }
